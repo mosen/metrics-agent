@@ -24,3 +24,21 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
       - name: push to dockerhub
         run: make dockerhub-push
+      - name: Notify slack success
+        if: success()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        uses: voxmedia/github-action-slack-notify-build@v1
+        with:
+          channel: squad-11-noise
+          status: SUCCESS
+          color: good
+      - name: Notify slack fail
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        uses: voxmedia/github-action-slack-notify-build@v1
+        with:
+          channel: squad-11-noise
+          status: FAILED
+          color: danger
