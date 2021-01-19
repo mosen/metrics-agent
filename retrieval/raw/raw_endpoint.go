@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
 	"net/http"
 	"os"
@@ -47,6 +48,34 @@ func (c *Client) createRequest(method, url string, body io.Reader) (*http.Reques
 	}
 
 	return request, err
+}
+
+func (c *Client) Get(method, sourceName string, URL string, body []byte) (respBody []byte, statusCode int, rerr error) {
+	req, err := c.createRequest(method, URL, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, 500, errors.New("Unable to create raw request for " + sourceName)
+	}
+
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, resp.StatusCode, errors.New("Unable to connect")
+	}
+
+	defer util.SafeClose(resp.Body.Close, &rerr)
+
+	if !(resp.StatusCode >= 200 && resp.StatusCode <= 299) {
+		return nil, resp.StatusCode, fmt.Errorf("Invalid response %s", strconv.Itoa(resp.StatusCode))
+	}
+
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return bodyBytes, resp.StatusCode, nil
 }
 
 //GetRawEndPoint retrives the body of HTTP response from a given method ,

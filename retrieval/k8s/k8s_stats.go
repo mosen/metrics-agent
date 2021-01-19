@@ -1,12 +1,65 @@
 package k8s
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/cloudability/metrics-agent/retrieval/raw"
 	log "github.com/sirupsen/logrus"
+	corev1 "k8s.io/api/core/v1"
 )
+
+// ListResponse is a base object for unmarshaling k8s objects from the JSON files containing them. It captures
+// the general fields present on all the responses.
+type ListResponse struct {
+	APIVersion string            `json:"apiVersion"`
+	Kind       string            `json:"kind"`
+	Metadata   map[string]string `json:"metadata"`
+	Code       int               `json:"code"`
+	Details    map[string]string `json:"details"`
+	Message    string            `json:"message"`
+	Reason     string            `json:"reason"`
+	Status     string            `json:"status"`
+}
+
+type PodList struct {
+	ListResponse
+	Items []corev1.Pod `json:"items"`
+}
+
+func GetCAdvisorPods(clusterHostURL string, rawClient raw.Client) (hasCadvisor bool, podIPs []string, rerr error) {
+	// TODO: check for cAdvisor daemonset
+	_, statusCode, err := rawClient.Get(http.MethodGet, "namespaces", clusterHostURL+"/api/v1/namespaces/cadvisor", nil)
+	if statusCode == 404 {
+		return false, podIPs, err
+	}
+	if err != nil {
+		return hasCadvisor, podIPs, err
+	}
+	hasCadvisor = true
+	body, statusCode, err := rawClient.Get(http.MethodGet, "pods", clusterHostURL+"/api/v1/namespaces/cadvisor/pods/", nil)
+	if err != nil {
+		return hasCadvisor, podIPs, err
+	}
+	if !(statusCode >= 200 && statusCode <= 299) {
+		return hasCadvisor, podIPs, fmt.Errorf("Invalid response %s", strconv.Itoa(statusCode))
+	}
+	podList := PodList{}
+	err = json.Unmarshal(body, &podList)
+	if err != nil {
+		return hasCadvisor, podIPs, fmt.Errorf("error unmarshaling: %v", err)
+	}
+	log.Info("Num pods:", len(podList.Items))
+	podIPs = make([]string, 0, len(podList.Items))
+	for _, pod := range podList.Items {
+		log.Info("POD IP:", pod.Status.PodIP)
+		podIPs = append(podIPs, pod.Status.PodIP)
+	}
+	return true, podIPs, nil
+}
 
 //GetK8sMetrics returns cloudabilty measurements retrieved from a given K8S Clientset
 func GetK8sMetrics(clusterHostURL string, clusterVersion float64, workDir *os.File, rawClient raw.Client) (err error) {

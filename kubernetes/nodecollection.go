@@ -109,7 +109,7 @@ func downloadNodeData(prefix string,
 		return nil, fmt.Errorf("error occurred requesting container statistics: %v", err)
 	}
 
-	for _, n := range nodes {
+	for i, n := range nodes {
 		if n.Spec.ProviderID == "" {
 			failedNodeList[n.Name] = errors.New("Provider ID for node does not exist. " +
 				"If this condition persists it will cause inconsistent cluster allocation")
@@ -126,7 +126,11 @@ func downloadNodeData(prefix string,
 		// The config shouldn't allow direct connection if Fargate nodes were
 		// found in the cluster at startup, but check again here to be safe.
 		if config.nodeRetrievalMethod == direct && !isFargateNode(n) {
-			err := directNodeFetch(nodeSource, config, &n, nd)
+			var podIP string
+			if len(config.PodIPs) >= len(nodes) {
+				podIP = config.PodIPs[i]
+			}
+			err := directNodeFetch(nodeSource, podIP, config, &n, nd)
 			// no error, no need to try proxy
 			if err == nil {
 				continue
@@ -156,13 +160,13 @@ type nodeFetchData struct {
 }
 
 // directNodeFetch retrieves node stats directly from the node api
-func directNodeFetch(nodeSource NodeSource, config KubeAgentConfig, n *v1.Node, nd nodeFetchData) error {
+func directNodeFetch(nodeSource NodeSource, podIP string, config KubeAgentConfig, n *v1.Node, nd nodeFetchData) error {
 	ip, port, err := nodeSource.NodeAddress(n)
 	if err != nil {
 		return fmt.Errorf("problem getting node address: %s", err)
 	}
-	d := directNodeEndpoints(ip, port)
-	return retrieveNodeData(nd, config.NodeClient, d.statsSummary(), d.statsContainer())
+	d := directNodeEndpoints(ip, podIP, port)
+	return retrieveNodeData(nd, config.NodeClient, d.statsSummary(), d.newContainer())
 }
 
 // proxyNodeFetch retrieves node data via the proxy api
@@ -194,8 +198,9 @@ func proxyEndpoints(clusterHostURL, nodeName string) proxyAPI {
 }
 
 type directNode struct {
-	ip   string
-	port int64
+	ip    string
+	port  int64
+	podIP string
 }
 
 // statsSummary formats the direct node stats/summary endpoint
@@ -208,10 +213,15 @@ func (d directNode) statsContainer() string {
 	return fmt.Sprintf("https://%s:%v/stats/container/", d.ip, d.port)
 }
 
-func directNodeEndpoints(ip string, port int32) directNode {
+func (d directNode) newContainer() string {
+	return fmt.Sprintf("http://%s:8080/api/v1.1/subcontainers/", d.podIP)
+}
+
+func directNodeEndpoints(ip, podIP string, port int32) directNode {
 	return directNode{
-		ip:   ip,
-		port: int64(port),
+		ip:    ip,
+		port:  int64(port),
+		podIP: podIP,
 	}
 }
 
@@ -228,8 +238,12 @@ func (s sourceName) container() string {
 	return fmt.Sprintf("%s-container-%s", s.prefix, s.nodeName)
 }
 
+func (s sourceName) newContainer() string {
+	return fmt.Sprintf("%s-newcontainer-%s", s.prefix, s.nodeName)
+}
+
 // retrieveNodeData fetches summary and container data from the node
-func retrieveNodeData(nd nodeFetchData, c raw.Client, nodeStatSum, containerStats string) error {
+func retrieveNodeData(nd nodeFetchData, c raw.Client, nodeStatSum, newContainer string) error {
 	source := sourceName{
 		prefix:   nd.prefix,
 		nodeName: nd.nodeName,
@@ -241,9 +255,8 @@ func retrieveNodeData(nd nodeFetchData, c raw.Client, nodeStatSum, containerStat
 	}
 	// fetch container details
 	_, err = c.GetRawEndPoint(
-		http.MethodPost, source.container(), nd.workDir, containerStats, nd.containersRequest, true)
+		http.MethodPost, source.container(), nd.workDir, newContainer, nd.containersRequest, true)
 	return err
-
 }
 
 //ensureNodeSource validates connectivity to the kubelet metrics endpoints.
@@ -278,10 +291,20 @@ func ensureNodeSource(config KubeAgentConfig) (KubeAgentConfig, error) {
 		return config, fmt.Errorf("error retrieving node addresses: %s", err)
 	}
 
+	var firstPod string
+	if len(config.PodIPs) > 0 {
+		firstPod = config.PodIPs[0]
+	}
+
 	if allowDirectConnect(config, nodes) {
 		// test node direct connectivity
-		d := directNodeEndpoints(ip, port)
-		success, err := testNodeConn(&nodeHTTPClient, d.statsSummary(), d.statsContainer(), config.BearerToken)
+		d := directNodeEndpoints(ip, firstPod, port)
+		containerEndpoint := d.statsContainer()
+		if len(config.PodIPs) > 0 {
+			containerEndpoint = d.newContainer()
+		}
+		success, err := testNodeConn(&nodeHTTPClient, d.statsSummary(), containerEndpoint, config.BearerToken)
+		log.Infof("Success? %t, Error? %v", success, err)
 		if err != nil {
 			return config, err
 		}
@@ -308,12 +331,12 @@ func ensureNodeSource(config KubeAgentConfig) (KubeAgentConfig, error) {
 	return config, fmt.Errorf("unable to retrieve node metrics. Please verify RBAC roles: %v", err)
 }
 
-func testNodeConn(client *http.Client, nodeStatSum, containerStats, bearerToken string) (success bool, err error) {
-	ns, _, err := util.TestHTTPConnection(client, nodeStatSum, http.MethodGet, bearerToken, 0, false)
+func testNodeConn(client *http.Client, nodeStatSum, newContainer, bearerToken string) (success bool, err error) {
+	cs, _, err := util.TestHTTPConnection(client, newContainer, http.MethodGet, bearerToken, 0, true)
 	if err != nil {
 		return false, err
 	}
-	cs, _, err := util.TestHTTPConnection(client, containerStats, http.MethodPost, bearerToken, 0, false)
+	ns, _, err := util.TestHTTPConnection(client, nodeStatSum, http.MethodGet, bearerToken, 0, true)
 	if err != nil {
 		return false, err
 	}

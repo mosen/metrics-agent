@@ -78,6 +78,7 @@ type KubeAgentConfig struct {
 	TLSClientConfig       rest.TLSClientConfig
 	Namespace             string
 	ScratchDir            string
+	PodIPs                []string
 }
 
 const uploadInterval time.Duration = 10
@@ -578,6 +579,15 @@ func updateConfigWithOverrideURLs(config KubeAgentConfig) KubeAgentConfig {
 
 func ensureMetricServicesAvailable(config KubeAgentConfig) (KubeAgentConfig, error) {
 	var err error
+
+	hasCadvisor, podIPs, err := k8s_stats.GetCAdvisorPods(config.ClusterHostURL, config.InClusterClient)
+	if err != nil {
+		log.Info("Error fetching cadvisr pods:", err)
+	}
+	log.Infof("Has cadvisor? %t", hasCadvisor)
+	if hasCadvisor {
+		config.PodIPs = podIPs
+	}
 
 	if config.RetrieveNodeSummaries {
 		config, err = ensureNodeSource(config)
