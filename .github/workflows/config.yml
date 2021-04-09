@@ -15,11 +15,11 @@ jobs:
       - name: Snyk Test
         run: snyk test  --severity-threshold=medium --org=cloudability
         env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN_2 }}
       - name: Snyk monitor
         run: snyk monitor --org=cloudability
         env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN_2 }}
 
   build:
     name: Build
