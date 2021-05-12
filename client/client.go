@@ -2,7 +2,6 @@ package client
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,6 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -89,30 +87,29 @@ func NewHTTPMetricClient(cfg Configuration) (MetricClient, error) {
 		cfg.MaxRetries = defaultMaxRetries
 	}
 
-	netTransport := &http.Transport{
-		Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
-		TLSHandshakeTimeout: cfg.Timeout,
-	}
+	netTransport := http.DefaultTransport.(*http.Transport).Clone()
+	netTransport.TLSHandshakeTimeout = cfg.Timeout
+	// Connection timeout is part of http/client now, not Dialer.
+
+	// By cloning the default transport, we already respect the `http.ProxyFromEnvironment` proxy, which is standardised
+	// by the usage of the HTTP_PROXY/HTTPS_PROXY environment variables.
+	// See: https://golang.org/pkg/net/http/#RoundTripper (DefaultTransport)
 
 	// configure outbound proxy
 	if len(cfg.ProxyURL.Host) > 0 {
+		// Remain backwards compatible with `CLOUDABILITY_OUTBOUND_PROXY`
+		netTransport.Proxy = http.ProxyURL(&cfg.ProxyURL)
+	}
+
+	if cfg.ProxyAuth != "" {
 		ConnectHeader := http.Header{}
+		basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.ProxyAuth))
+		ConnectHeader.Add(proxyAuthHeader, basicAuth)
+		netTransport.ProxyConnectHeader = ConnectHeader
+	}
 
-		if cfg.ProxyAuth != "" {
-			basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.ProxyAuth))
-			ConnectHeader.Add(proxyAuthHeader, basicAuth)
-		}
-
-		netTransport = &http.Transport{
-			Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
-			Proxy:               http.ProxyURL(&cfg.ProxyURL),
-			ProxyConnectHeader:  ConnectHeader,
-			TLSHandshakeTimeout: cfg.Timeout,
-			TLSClientConfig: &tls.Config{
-				//nolint gas
-				InsecureSkipVerify: cfg.ProxyInsecure,
-			},
-		}
+	if cfg.ProxyInsecure {
+		netTransport.TLSClientConfig.InsecureSkipVerify = true
 	}
 
 	httpClient := http.Client{
