@@ -132,6 +132,25 @@ func CollectKubeMetrics(config KubeAgentConfig) {
 
 	log.Info("Cloudability Metrics Agent successfully started.")
 
+	log.Info("Performing connectivity checks")
+	metricsClient, err := client.NewHTTPMetricClient(client.Configuration{
+		Token: config.APIKey,
+	})
+	if err != nil {
+		log.Warnf("unable to perform connectivity check, continuing anyway, reason: %v", err)
+	} else {
+		var err error
+		err = metricsClient.TestApiConnectivity()
+		if err != nil {
+			log.Warnf("unable to connect to cloudability API, reason: %v", err)
+		}
+
+		err = metricsClient.TestUploadConnectivity()
+		if err != nil {
+			log.Warnf("unable to connect to cloudability upload site, reason: %v", err)
+		}
+	}
+
 	for {
 		select {
 
