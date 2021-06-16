@@ -5,7 +5,7 @@ EXEC_CHECK := $(foreach exec,$(EXECUTABLES), \
 
 GOLANG_VERSION?=1.14
 REPO_DIR:=$(shell pwd)
-PREFIX=cloudability
+PREFIX=quay.io/mosen
 CLDY_API_KEY=${CLOUDABILITY_API_KEY}
 
 # $(call TEST_KUBERNETES, image_tag, prefix, git_commit)
@@ -70,12 +70,12 @@ dockerhub-push-beta:
 	docker push cloudability/metrics-agent:$(RELEASE-VERSION)-beta
 
 docker-tag:
-	docker tag $(PREFIX)/metrics-agent:$(VERSION) cloudability/metrics-agent:latest
-	docker tag $(PREFIX)/metrics-agent:$(VERSION) cloudability/metrics-agent:$(RELEASE-VERSION)
+	docker tag $(PREFIX)/metrics-agent:$(VERSION) $(PREFIX)/metrics-agent:latest
+	docker tag $(PREFIX)/metrics-agent:$(VERSION) $(PREFIX)/metrics-agent:$(RELEASE-VERSION)
 
 docker-tag-beta:
-	docker tag $(PREFIX)/metrics-agent:$(VERSION) cloudability/metrics-agent:beta-latest
-	docker tag $(PREFIX)/metrics-agent:$(VERSION) cloudability/metrics-agent:$(RELEASE-VERSION)-beta
+	docker tag $(PREFIX)/metrics-agent:$(VERSION) $(PREFIX)/metrics-agent:beta-latest
+	docker tag $(PREFIX)/metrics-agent:$(VERSION) $(PREFIX)/metrics-agent:$(RELEASE-VERSION)-beta
 
 download-deps:
 	@echo Download go.mod dependencies

@@ -95,7 +95,7 @@ const kbURL string = "https://support.cloudability.com/hc/en-us/articles/3600083
 
 //CollectKubeMetrics Collects metrics from Kubernetes on a predetermined interval
 func CollectKubeMetrics(config KubeAgentConfig) {
-
+	log.Infof("Yes, you are running a fork")
 	log.Infof("Starting Cloudability Kubernetes Metric Agent version: %v", cldyVersion.VERSION)
 	log.Infof("Metric collection retry limit set to %d (default is %d)",
 		config.CollectionRetryLimit, DefaultCollectionRetry)
@@ -131,6 +131,25 @@ func CollectKubeMetrics(config KubeAgentConfig) {
 	}
 
 	log.Info("Cloudability Metrics Agent successfully started.")
+
+	log.Info("Performing connectivity checks")
+	metricsClient, err := client.NewHTTPMetricClient(client.Configuration{
+		Token: config.APIKey,
+	})
+	if err != nil {
+		log.Warnf("unable to perform connectivity check, continuing anyway, reason: %v", err)
+	} else {
+		var err error
+		err = metricsClient.TestApiConnectivity()
+		if err != nil {
+			log.Warnf("unable to connect to cloudability API, reason: %v", err)
+		}
+
+		err = metricsClient.TestUploadConnectivity()
+		if err != nil {
+			log.Warnf("unable to connect to cloudability upload site, reason: %v", err)
+		}
+	}
 
 	for {
 		select {

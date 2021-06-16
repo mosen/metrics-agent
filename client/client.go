@@ -187,6 +187,8 @@ type MetricClient interface {
 	SendMeasurement(measurements []measurement.Measurement) error
 	SendMetricSample(*os.File, string, string) error
 	GetUploadURL(*os.File, string, string, string) (string, string, error)
+	TestApiConnectivity() error
+	TestUploadConnectivity() error
 }
 
 type httpMetricClient struct {
@@ -308,6 +310,8 @@ func (c httpMetricClient) retryWithBackoff(
 			log.Errorf("error encountered while retrieving upload location: %v", err)
 			continue
 		}
+		log.Debugf("got s3 presigned url: %v, for hash: %v", uploadURL, hash)
+		log.Debugf("CURL: curl -v --upload-file %v '%v'", metricFile.Name(), uploadURL)
 
 		resp, err = c.buildAndDoRequest(metricFile, uploadURL, agentVersion, UID, hash)
 
@@ -321,6 +325,7 @@ func (c httpMetricClient) retryWithBackoff(
 		}
 
 		if err != nil && strings.Contains(err.Error(), "Client.Timeout exceeded") {
+			log.Warn("timeout exceeded trying to build request")
 			time.Sleep(getSleepDuration(i))
 			continue
 		}
@@ -358,7 +363,9 @@ func (c httpMetricClient) buildAndDoRequest(
 	UID string,
 	hash string,
 ) (resp *http.Response, err error) {
-
+	defer func() {
+		log.Debug("finished upload")
+	}()
 	var (
 		req *http.Request
 	)
@@ -385,6 +392,8 @@ func (c httpMetricClient) buildAndDoRequest(
 	req.Header.Set(contentMD5, hash)
 	req.ContentLength = size
 
+	log.Debugf("about to send file %v which is %v bytes", metricFile.Name(), size)
+
 	if c.verbose {
 		requestDump, err := httputil.DumpRequest(req, true)
 		if err != nil {
@@ -400,6 +409,46 @@ func (c httpMetricClient) buildAndDoRequest(
 func getSleepDuration(tries int) time.Duration {
 	seconds := int((0.5) * (math.Pow(2, float64(tries)) - 1))
 	return time.Duration(seconds) * time.Second
+}
+
+func (c httpMetricClient) TestApiConnectivity() error {
+	log.Infof("testing api connectivity to %v (not validating credentials)", c.baseURL)
+	req, err := http.NewRequest(http.MethodGet, c.baseURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode < 500 {
+		log.Infof("successfully tested connectivity to api, no 5xx gateway errors or timeouts connecting to %v", c.baseURL)
+		return nil
+	} else {
+		return fmt.Errorf("cannot connect to api, got a 5xx error response: %v %v", resp.StatusCode, resp.Status)
+	}
+}
+
+func (c httpMetricClient) TestUploadConnectivity() error {
+	log.Infof("testing upload connectivity to (not implemented)")
+	req, err := http.NewRequest(http.MethodGet, "https://cldy-cake-pipeline.s3.amazonaws.com", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode < 500 {
+		log.Info("successfully tested connectivity to api, no 5xx gateway errors or timeouts connecting to upload bucket")
+		return nil
+	} else {
+		return fmt.Errorf("cannot connect to api, got a 5xx error response: %v %v", resp.StatusCode, resp.Status)
+	}
 }
 
 func (c httpMetricClient) GetUploadURL(
@@ -430,13 +479,13 @@ func (c httpMetricClient) GetUploadURL(
 	req.Header.Set(clusterUIDHeader, UID)
 	req.Header.Set(uploadFileHash, hash)
 
-	if c.verbose {
-		requestDump, err := httputil.DumpRequest(req, true)
-		if err != nil {
-			log.Errorln(err)
-		}
-		log.Infoln(string(requestDump))
+	//if c.verbose {
+	requestDump, err := httputil.DumpRequest(req, true)
+	if err != nil {
+		log.Errorln(err)
 	}
+	log.Infoln(string(requestDump))
+	//}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
