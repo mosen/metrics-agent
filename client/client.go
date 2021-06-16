@@ -89,13 +89,51 @@ func NewHTTPMetricClient(cfg Configuration) (MetricClient, error) {
 		cfg.MaxRetries = defaultMaxRetries
 	}
 
-	netTransport := &http.Transport{
-		Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
-		TLSHandshakeTimeout: cfg.Timeout,
-	}
+	/*
+		    // the old implementation
+				netTransport := &http.Transport{
+					Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
+					TLSHandshakeTimeout: cfg.Timeout,
+				}
 
-	// configure outbound proxy
+				// configure outbound proxy
+				if len(cfg.ProxyURL.Host) > 0 {
+					ConnectHeader := http.Header{}
+
+					if cfg.ProxyAuth != "" {
+						basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.ProxyAuth))
+						ConnectHeader.Add(proxyAuthHeader, basicAuth)
+					}
+
+					netTransport = &http.Transport{
+						Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
+						Proxy:               http.ProxyURL(&cfg.ProxyURL),
+						ProxyConnectHeader:  ConnectHeader,
+						TLSHandshakeTimeout: cfg.Timeout,
+						TLSClientConfig: &tls.Config{
+							//nolint gas
+							InsecureSkipVerify: cfg.ProxyInsecure,
+						},
+					}
+				}
+	*/
+
+	// Connection timeout is part of http/client now, not Dialer.
+
+	// By cloning the default transport, we already respect the `http.ProxyFromEnvironment` proxy, which is standardised
+	// by the usage of the HTTP_PROXY/HTTPS_PROXY environment variables.
+	// See: https://golang.org/pkg/net/http/#RoundTripper (DefaultTransport)
+
+	var netTransport *http.Transport
+
+	// configure outbound proxy the old way if `CLOUDABILITY_OUTBOUND_PROXY` was specified.
 	if len(cfg.ProxyURL.Host) > 0 {
+		log.Info("using old proxy construction because you supplied `CLOUDABILITY_OUTBOUND_PROXY`")
+		netTransport = &http.Transport{
+			Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
+			TLSHandshakeTimeout: cfg.Timeout,
+		}
+
 		ConnectHeader := http.Header{}
 
 		if cfg.ProxyAuth != "" {
@@ -110,6 +148,17 @@ func NewHTTPMetricClient(cfg Configuration) (MetricClient, error) {
 			TLSHandshakeTimeout: cfg.Timeout,
 			TLSClientConfig: &tls.Config{
 				//nolint gas
+				InsecureSkipVerify: cfg.ProxyInsecure,
+			},
+		}
+	} else {
+		log.Info("using new proxy construction from env")
+		netTransport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			// Removed: Dial + ProxyConnectHeader
+			TLSHandshakeTimeout: cfg.Timeout,
+			TLSClientConfig: &tls.Config{
+				// Do not specify individual timeouts here as they will accumulate, just use http.Client.Timeout
 				InsecureSkipVerify: cfg.ProxyInsecure,
 			},
 		}
