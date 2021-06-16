@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -89,73 +88,37 @@ func NewHTTPMetricClient(cfg Configuration) (MetricClient, error) {
 		cfg.MaxRetries = defaultMaxRetries
 	}
 
-	/*
-		    // the old implementation
-				netTransport := &http.Transport{
-					Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
-					TLSHandshakeTimeout: cfg.Timeout,
-				}
-
-				// configure outbound proxy
-				if len(cfg.ProxyURL.Host) > 0 {
-					ConnectHeader := http.Header{}
-
-					if cfg.ProxyAuth != "" {
-						basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.ProxyAuth))
-						ConnectHeader.Add(proxyAuthHeader, basicAuth)
-					}
-
-					netTransport = &http.Transport{
-						Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
-						Proxy:               http.ProxyURL(&cfg.ProxyURL),
-						ProxyConnectHeader:  ConnectHeader,
-						TLSHandshakeTimeout: cfg.Timeout,
-						TLSClientConfig: &tls.Config{
-							//nolint gas
-							InsecureSkipVerify: cfg.ProxyInsecure,
-						},
-					}
-				}
-	*/
-
 	// Connection timeout is part of http/client now, not Dialer.
 
 	// By cloning the default transport, we already respect the `http.ProxyFromEnvironment` proxy, which is standardised
 	// by the usage of the HTTP_PROXY/HTTPS_PROXY environment variables.
 	// See: https://golang.org/pkg/net/http/#RoundTripper (DefaultTransport)
 
-	var netTransport *http.Transport
+	var transport *http.Transport
 
 	// configure outbound proxy the old way if `CLOUDABILITY_OUTBOUND_PROXY` was specified.
 	if len(cfg.ProxyURL.Host) > 0 {
-		log.Info("using old proxy construction because you supplied `CLOUDABILITY_OUTBOUND_PROXY`")
-		netTransport = &http.Transport{
-			Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
-			TLSHandshakeTimeout: cfg.Timeout,
-		}
+		log.Warn("using old proxy construction because you supplied `CLOUDABILITY_OUTBOUND_PROXY`.")
+		log.Warn("You should use the standard `HTTPS_PROXY` + `HTTP_PROXY` environment variables.")
 
-		ConnectHeader := http.Header{}
-
-		if cfg.ProxyAuth != "" {
-			basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.ProxyAuth))
-			ConnectHeader.Add(proxyAuthHeader, basicAuth)
-		}
-
-		netTransport = &http.Transport{
-			Dial:                (&net.Dialer{Timeout: cfg.Timeout}).Dial,
+		transport = &http.Transport{
 			Proxy:               http.ProxyURL(&cfg.ProxyURL),
-			ProxyConnectHeader:  ConnectHeader,
 			TLSHandshakeTimeout: cfg.Timeout,
 			TLSClientConfig: &tls.Config{
-				//nolint gas
+				// Do not specify individual timeouts here as they will accumulate, just use http.Client.Timeout
 				InsecureSkipVerify: cfg.ProxyInsecure,
 			},
 		}
 	} else {
-		log.Info("using new proxy construction from env")
-		netTransport = &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			// Removed: Dial + ProxyConnectHeader
+		log.Info("using default proxy environment variables")
+		log.Infof("http_proxy=%s", os.Getenv("http_proxy"))
+		log.Infof("https_proxy=%s", os.Getenv("https_proxy"))
+		log.Infof("HTTP_PROXY=%s", os.Getenv("HTTP_PROXY"))
+		log.Infof("HTTPS_PROXY=%s", os.Getenv("HTTPS_PROXY"))
+		log.Infof("NO_PROXY=%s", os.Getenv("NO_PROXY"))
+
+		transport = &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
 			TLSHandshakeTimeout: cfg.Timeout,
 			TLSClientConfig: &tls.Config{
 				// Do not specify individual timeouts here as they will accumulate, just use http.Client.Timeout
@@ -164,9 +127,16 @@ func NewHTTPMetricClient(cfg Configuration) (MetricClient, error) {
 		}
 	}
 
+	if cfg.ProxyAuth != "" {
+		ConnectHeader := http.Header{}
+		basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.ProxyAuth))
+		ConnectHeader.Add(proxyAuthHeader, basicAuth)
+		transport.ProxyConnectHeader = ConnectHeader
+	}
+
 	httpClient := http.Client{
 		Timeout:   cfg.Timeout,
-		Transport: netTransport,
+		Transport: transport,
 	}
 
 	userAgent := fmt.Sprintf("cldy-client/%v", version.VERSION)
@@ -303,32 +273,34 @@ func (c httpMetricClient) retryWithBackoff(
 ) (resp *http.Response, err error) {
 
 	for i := 0; i < c.maxRetries; i++ {
-
+		log.Debugf("retry %d of %d", i, c.maxRetries)
+		log.Debugf("get upload URL for metric file: %v", metricFile.Name())
 		var uploadURL, hash string
 		uploadURL, hash, err = c.GetUploadURL(metricFile, metricSampleURL, agentVersion, UID)
 		if err != nil {
-			log.Errorf("error encountered while retrieving upload location: %v", err)
+			log.Errorf("skipping this file because: error encountered while retrieving upload location: %v", err)
 			continue
 		}
+
 		log.Debugf("got s3 presigned url: %v, for hash: %v", uploadURL, hash)
 		log.Debugf("CURL: curl -v --upload-file %v '%v'", metricFile.Name(), uploadURL)
 
 		resp, err = c.buildAndDoRequest(metricFile, uploadURL, agentVersion, UID, hash)
-
-		if c.verbose {
-			reponseDump, err := httputil.DumpResponse(resp, true)
-			if err != nil {
-				log.Errorln(err)
-				continue
-			}
-			log.Infoln(string(reponseDump))
-		}
-
 		if err != nil && strings.Contains(err.Error(), "Client.Timeout exceeded") {
 			log.Warn("timeout exceeded trying to build request")
+			log.Debugf("original error: %v", err)
 			time.Sleep(getSleepDuration(i))
 			continue
 		}
+
+		//if c.verbose {
+		responseDump, err := httputil.DumpResponse(resp, true)
+		if err != nil {
+			log.Errorln(err)
+			continue
+		}
+		log.Infoln(string(responseDump))
+		//}
 
 		if resp == nil {
 			continue
